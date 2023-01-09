@@ -1,0 +1,500 @@
+---
+title: "CSE3506 Project - Sentiment Analysis on Hotel Reviews and Hybrid Recommender for customers"
+output:
+  html_document:
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+  pdf_document: default
+  word_document: default
+---
+### Reg. No: 18BCE1044
+
+### Name: Ayanabha Jana
+
+## Setup
+```{r}
+
+```
+
+* * *
+
+## What problem are you trying to solve?
+
+# Understanding a customer's needs and preferences towards accomodation services and suggesting the same on the constraint of the ongoing pandemic and availability
+
+* * *
+
+
+
+* * *
+
+## What data have you chosen?(Chosen Dataset, Source of dataset, Description of dataset, basic commands to describe dataset)
+
+```{r}
+#dataset description
+rm(list=ls())
+dhotel<-read.csv("D:\\6th sem materials\\Data Analytics\\hotel_reviews.csv")
+dcovid<-read.csv("D:\\6th sem materials\\Data Analytics\\covid19.csv")
+head(dhotel)
+head(dcovid)
+sum(is.na(dhotel))
+nrow(dhotel)
+sum(is.na(dcovid))
+nrow(dcovid)
+```
+
+* * *
+
+* * *
+
+## Frame your objectives
+
+# 1.To perform sentiment analysis on hotel reviews in order to understand the inclination of customers towards a particular service and how it can be improved in comparison to their peers
+
+```{r}
+#data cleaning
+library(dplyr)
+dhotel<-dhotel%>%
+  select(-reviews.dateAdded)
+dhotel$ratings<-dhotel$reviews.rating
+sum(is.na(dhotel))
+
+#removing duplicate reviews
+dhotel<-dhotel[!duplicated(dhotel$reviews.text),]
+nrow(dhotel)
+
+#removing punctuation and special characters, and tokenizing the text
+library(quanteda)
+text.tokens<-tokens(as.character(dhotel$reviews.text),what="word",remove_numbers=T,
+                    remove_punct=T,remove_symbols=T,remove_hyphens=T)
+text.tokens[[24]]
+
+#lower casing the tokens and removing stop words
+text.tokens<-tokens_tolower(text.tokens)
+text.tokens<-tokens_select(text.tokens,stopwords(),selection="remove")
+text.tokens[[24]]
+
+#stemming the tokenized text
+text.tokens<-tokens_wordstem(text.tokens,language="english")
+text.tokens[[24]]
+
+#finding document-feature matrix and extracting TFIDF feature
+text.dfm<-dfm(text.tokens)
+text.tfmat<-dfm_tfidf(text.dfm)
+tfmat<-as.matrix(text.tfmat)
+
+hist(dhotel$reviews.rating)
+```
+
+## Inference: The histogram of ratings distribution indicates a majority of 5 star reviews.
+
+```{r}
+#supervised sentiment analysis
+dhotel<-dhotel%>%
+  mutate(reviews.rating=replace(reviews.rating,reviews.rating<3,'neg'))
+dhotel<-dhotel%>%
+  mutate(reviews.rating=replace(reviews.rating,reviews.rating==3,'neu'))
+dhotel<-dhotel%>%
+  mutate(reviews.rating=replace(reviews.rating,reviews.rating==4,'pos'))%>%
+  mutate(reviews.rating=replace(reviews.rating,reviews.rating==5,'pos'))
+
+library(ggplot2)
+ggplot(dhotel,aes(x=as.factor(reviews.rating),fill=reviews.rating))+
+  geom_bar()+
+  ggtitle("Distribution of actual user sentiments")+
+  labs(x="sentiment",y="count")
+
+library(caret)
+set.seed(123)
+smp_size<-createDataPartition(dhotel$reviews.rating,p=0.8,list=F,times=1)
+train<-dhotel[smp_size,]
+test<-dhotel[-smp_size,]
+tftrain<-tfmat[smp_size,]
+tftest<-tfmat[-smp_size,]
+```
+
+## Inference: The distribution of actual user sentiments shows a higher no. of positive reviews and almost similar count of negative and neutral reviews.
+
+```{r}
+#multinomial naive bayes
+library(naivebayes)
+mnb<-multinomial_naive_bayes(x=tftrain,y=train$reviews.rating)
+summary(mnb)
+
+pred_class<-predict(mnb,newdata=tftest,type="class")
+confusionMatrix(table(pred_class,test$reviews.rating),positive='pos')
+```
+
+## Inference: The prior probability of postive sentiment is higher compared to negative and neutral reviews. Naive Bayes gives an accuracy of around 75%. Only neutral reviews have a larger number of misclassified values than positive and negative sentiments. 
+
+```{r}
+#reducing no. of columns in TFIDF using singular value decomposition
+library(irlba)
+library(doParallel)
+
+cl<-makePSOCKcluster(3)
+registerDoParallel(cl)
+
+text.reduced<-irlba(t(text.tfmat),nv=300)
+
+stopCluster(cl)
+
+dsvm<-as.data.frame(text.reduced$v)
+dim(dsvm)
+
+#support vector machine using rbf
+dsvm$sentiment<-dhotel$reviews.rating
+train<-dsvm[smp_size,]
+test<-dsvm[-smp_size,]
+library(e1071)
+svm_model<-svm(formula=sentiment~.,data=train,type='C-classification',kernel='radial')
+summary(svm_model)
+
+pred_class<-predict(svm_model,newdata=test[,1:300],type="class")
+confusionMatrix(table(pred_class,test$sentiment),positive = "pos")
+```
+
+## Inference: SVM utilises a larger number of support vectors for classifying neutral reviews due to its smaller sample size in the training data. SVM gives a greater accuracy of 80% compared to Naive Bayes with less misclassified sentiments and hence is used to predict the sentiment for the entire dataset.
+
+```{r}
+#predicting sentiment for entire dataset
+dpredict<-as.data.frame(text.reduced$v)
+dpredict$sentiment<-dhotel$reviews.rating
+svm_model<-svm(formula=sentiment~.,data=dpredict,type='C-classification',kernel='radial')
+summary(svm_model)
+
+pred_class<-predict(svm_model,newdata=dpredict[,1:300],type="class")
+confusionMatrix(table(pred_class,dpredict$sentiment),positive = "pos")
+dhotel$sentiment<-pred_class
+
+ggplot(dhotel,aes(x=as.factor(sentiment),fill=sentiment))+
+  geom_bar()+
+  ggtitle("Distribution of predicted user sentiments")+
+  labs(x="sentiment",y="count")
+
+#creating cleaned sentiment dataset
+dt<-as.data.frame(text.reduced$v)
+dt$sentiment<-dhotel$sentiment
+dt$rev_no<-row.names(dt)
+```
+
+## Inference: SVM when applied to the entire dataset gives an accuracy of 89% and hence serves as a good classifier for supervised sentiment analysis. Also from the bar chart, count of positive sentiments is still greater while the no. of neutral sentiments is slightly lower compared to original sentiment count.
+
+```{r}
+#finding top reviews with positive sentiment
+dpos<-dt%>%
+  filter(sentiment=='pos')
+Q=rowSums(dpos[,1:300])/nrow(dpos)
+rank=c()
+library(philentropy)
+for(i in 1:nrow(dpos))
+{
+  P<-dpos[i,1:300]
+  x<-rbind(P,Q)
+  res<-distance(x,method='cosine')
+  rank[i]<-res
+}
+dpos$score<-rank
+dpos<-dpos%>%
+  arrange(desc(score))
+dpos<-dpos[1:5,]
+dhotel[dpos$rev_no,'reviews.text']
+ggplot(data=dpos,aes(y=score,x=as.character(rev_no),fill=as.character(rev_no)))+
+  geom_col(position=position_dodge())+
+  coord_flip()+
+  labs(x="Review No.",y="Rank Score")+
+  ggtitle("Top postive reviews")
+```
+
+## Inference: The highest rated postive review in terms of cosine similarity with the mean positive review has a value of around 0.24.
+
+```{r}
+#finding top reviews with neutral sentiment
+dneu<-dt%>%
+  filter(sentiment=='neu')
+Q=rowSums(dneu[,1:300])/nrow(dneu)
+rank=c()
+library(philentropy)
+for(i in 1:nrow(dneu))
+{
+  P<-dneu[i,1:300]
+  x<-rbind(P,Q)
+  res<-distance(x,method='cosine')
+  rank[i]<-res
+}
+dneu$score<-rank
+dneu<-dneu%>%
+  arrange(desc(score))
+dneu<-dneu[1:5,]
+dhotel[dneu$rev_no,'reviews.text']
+ggplot(data=dneu,aes(y=score,x=as.character(rev_no),fill=as.character(rev_no)))+
+  geom_col(position=position_dodge())+
+  coord_flip()+
+  labs(x="Review No.",y="Rank Score")+
+  ggtitle("Top neutral reviews")
+```
+
+## Inference: The highest rated neutral review in terms of cosine similarity with the mean neutral review has a value of around 0.16.
+
+
+```{r}
+#finding top reviews with negative sentiment
+dneg<-dt%>%
+  filter(sentiment=='neg')
+Q=rowSums(dneg[,1:300])/nrow(dneg)
+rank=c()
+for(i in 1:nrow(dneg))
+{
+  P<-dneg[i,1:300]
+  x<-rbind(P,Q)
+  res<-distance(x,method='cosine')
+  rank[i]<-res
+}
+dneg$score<-rank
+dneg<-dneg%>%
+  arrange(desc(score))
+dneg<-dneg[1:5,]
+dhotel[dneg$rev_no,'reviews.text']
+ggplot(data=dneg,aes(y=score,x=as.character(rev_no),fill=as.character(rev_no)))+
+  geom_col(position=position_dodge())+
+  coord_flip()+
+  labs(x="Review No.",y="Rank Score")+
+  ggtitle("Top negative reviews")
+```
+
+
+## Inference: The highest rated negative review in terms of cosine similarity with the mean negative review has a value of around 0.20.
+
+
+# 2.To map geospatial data of these hotels to check if they fall within Covid-19 containment clusters and using the current location of the customer generate the safest and shortest route to the hotel or suggest an alternative hotel based on location and preferences
+
+```{r}
+dhotel_loc<-data.frame(dhotel$name,dhotel$latitude,dhotel$longitude)
+hotel_locations<-as_tibble(dhotel_loc)
+
+#plotting using ggmap
+library(ggmap)
+us <- c(left = -125, bottom = 25.75, right = -67, top = 49)
+map<-get_stamenmap(us,zoom=6)
+ggmap(map)
+hotel_locations<-hotel_locations[1:10,]
+ggmap(map)+
+  geom_point(data=hotel_locations,aes(x=dhotel.longitude,y=dhotel.latitude),color="blue")
+
+dcovid_usa<-dcovid%>%
+  filter(COUNTRY_ALPHA_2_CODE=='US')
+dcovid_loc<-data.frame(dcovid_usa$GEO_LATITUDE,dcovid_usa$GEO_LONGITUDE)
+covid_locations<-as_tibble(dcovid_loc)
+ggmap(map)+
+  geom_point(data=hotel_locations,aes(x=dhotel.longitude,y=dhotel.latitude),color="blue")+
+  geom_point(data=covid_locations,aes(x=dcovid_usa.GEO_LONGITUDE,y=dcovid_usa.GEO_LATITUDE),color="red")
+```
+
+## Inference: In the map, the red dots indicate covid points. It can be said that a majority of covid cases occur in the eastern part of the US and quite sparse in the western part.
+
+```{r}
+#geospatial clustering - DBSCAN
+library(fpc)
+library(dbscan)
+library(factoextra)
+
+#preparing data for DBSCAN
+vars=c('PROVINCE_STATE_NAME',"GEO_LATITUDE","GEO_LONGITUDE","GEO_REGION_POPULATION_COUNT")
+dt_gc=dplyr::select(dcovid_usa,vars)
+head(dt_gc)
+
+library(leaflet)
+library(htmlwidgets)
+#limits of longitude and lat
+lln = min(dt_gc$GEO_LONGITUDE)
+uln = max(dt_gc$GEO_LONGITUDE)
+llat = min(dt_gc$GEO_LATITUDE)
+ulat = max(dt_gc$GEO_LATITUDE)
+# cemters of longitude and lats
+centlon = (lln+uln)/2
+centlat = (llat+ulat)/2
+
+sbt = dt_gc
+mp = leaflet(sbt) %>%
+  setView(centlon,centlat,zoom = 4) %>%
+  addProviderTiles("OpenStreetMap") %>%
+  addCircleMarkers(lng = sbt$GEO_LONGITUDE,
+                   lat = sbt$GEO_LATITUDE,
+                   popup = sbt$PROVINCE_STATE_NAME,
+                   fillColor = "Black",
+                   fillOpacity = 1,
+                   radius = 4,
+                   stroke = F)
+mp
+```
+```{r}
+#extracting location data
+locs=dplyr::select(dt_gc,GEO_LONGITUDE,GEO_LATITUDE)
+locs.scaled=scale(locs,center=T,scale=T)
+
+#determining optimal epsilon for DBSCAN
+dbscan::kNNdistplot(locs.scaled,k=12)
+abline(h=0.15,lty=2,col=rainbow(1),main="eps optimal value")
+
+```
+
+## Inference: The optimal value of epsilon for DBSCAN is the intersection of the red dashed line on the y-axis roughly around 0.15
+
+
+```{r}
+#clustering by location
+db=fpc::dbscan(locs.scaled,eps=0.15,MinPts = 12)
+db
+factoextra::fviz_cluster(db,locs.scaled,stand = F,ellipse = T,geom = "point")
+
+#predicting COVID clusters for hotels
+locs.hotels=dplyr::select(dhotel_loc,dhotel.longitude,dhotel.latitude)
+locs.hotels.scaled=scale(locs.hotels,center = T,scale = T)
+preds=predict(object=db,data=locs.scaled,newdata=locs.hotels.scaled)
+table(preds)
+dhotel$covid_cluster=preds
+
+ggplot(dhotel,aes(x=as.factor(ratings),fill=sentiment))+
+  geom_bar()+
+  ggtitle("Distribution of user sentiments by cluster")+
+  labs(x="sentiment",y="count")+
+  facet_grid(~covid_cluster)
+
+```
+
+## Inference: From the cluster plot, it can be seen that cluster 1 forms the largest cluster of covid points in the eastern part of US, while the black points representing cluster 0 forms the largest cluster of sparse covid distribution. The hotels fall within only cluster 0 and 1, and from the bar plot a majority of positive-reviewed hotels are in cluster 1, while cluster 0 has barely any negative and neutral reviews.
+
+```{r}
+dsvm$covid_cluster<-preds
+dhotel_clust1<-dhotel%>%
+  filter(covid_cluster==1)
+target_index<-1
+dtfmat_clust1<-dsvm%>%
+  filter(covid_cluster==1)
+target_vector<-dtfmat_clust1[target_index,1:300]
+target_tuple<-dhotel_clust1[target_index,]
+
+#finding k nearest neighbors to target hotel
+library(knn.covertree)
+knn_res<-find_knn(data=dtfmat_clust1[,1:300],5L,query=target_vector,distance="cosine")
+knn_res
+neighbor_indices<-as.vector(knn_res$index)[-1]
+neighbor_similarity<-as.vector(knn_res$dist)[-1]
+
+d_neighbor_hotels<-dhotel_clust1[neighbor_indices,]
+ggplot(data=d_neighbor_hotels,aes(y=ratings,x=as.character(name),fill=as.character(name)))+
+  geom_col(position=position_dodge())+
+  coord_flip()+
+  labs(x="Hotel",y="Ratings")+
+  ggtitle(paste("Similar hotels to target-",as.character(target_tuple[1,'name']),sep=' '))
+
+```
+
+## Inference: The highest rated hotel similar to the target hotel has a knn distance of 0.63.
+
+
+```{r}
+#geocoding to obtain target user's latitude and longitude
+library(tidygeocoder)
+d_loc_target<-as.data.frame(geo(city=as.character(target_tuple[1,'reviews.userCity'])))
+d_loc_target
+
+#computing estimated time of arrival to similar hotels using haversine distance
+library(geosphere)
+target_geocode<-c(as.numeric(d_loc_target[1,'long']),as.numeric(d_loc_target[1,'lat']))
+eta<-c()
+for(i in 1:nrow(d_neighbor_hotels))
+{
+  hotel_geocode<-c(as.numeric(d_neighbor_hotels[i,'longitude']),as.numeric(d_neighbor_hotels[i,'latitude']))
+  dist<-distHaversine(p1=hotel_geocode,p2=target_geocode)/1000
+  eta[i]<-dist
+}
+d_neighbor_hotels$eta<-eta
+d_neighbor_hotels
+
+ggplot(data=d_neighbor_hotels,aes(y=eta,x=as.character(name),fill=as.character(name)))+
+  geom_col(position=position_dodge())+
+  coord_flip()+
+  labs(x="Hotel",y="Estimated Distance")+
+  ggtitle("Estimated distance of hotels from user's location")
+
+```
+
+## Inference: Using haversine distance to calculate distance to reach suggested hotels by knn from the user's location gives the minimum value of 532 km. 
+
+# 3.To generate hotel recommendations from user profile and hotel reviews
+
+```{r}
+#Recommendation system
+dpredict$ratings<-dhotel$ratings
+library(caret)
+set.seed(123)
+split<-createDataPartition(dpredict$ratings,p=0.8,list=F,times=1)
+drec_train<-dpredict[split,]
+drec_test<-dpredict[-split,]
+```
+```{r}
+#training a neural regressor to predict ratings
+library(neuralnet)
+
+cl<-makePSOCKcluster(3)
+registerDoParallel(cl)
+
+nn <- neuralnet(ratings~.-sentiment,data=drec_train,linear.output = TRUE)
+
+stopCluster(cl)
+```
+```{r}
+#predicting the ratings on test data
+nn_pred<-predict(nn,drec_test[,1:300])
+rss <- sum((nn_pred - drec_test$ratings) ^ 2)  ## residual sum of squares
+tss <- sum((drec_test$ratings - mean(drec_test$ratings)) ^ 2)  ## total sum of squares
+rsq <- 1 - rss/tss
+rsq
+```
+
+## Inference: Predictions of test data ratings using neural network gives a r-squared value of 0.49 i.e. an average level of correlation with the reviews represented as TFIDF vectors.
+
+
+```{r}
+#estimating user threshold rating score from user profile and predicted scores
+nn_pred<-nn_pred/sum(nn_pred)
+user_vec<-runif(n = nrow(drec_test), min = 1, max = 5)
+threshold_user_rating<-(user_vec %*% nn_pred)
+min_error<-0.1
+
+rec_ind<-c()
+for(i in 1:nrow(drec_test))
+{
+  error<-abs(nn_pred[i]-threshold_user_rating)
+  if(error<=min_error)
+  {
+    rec_ind<-append(rec_ind,i)
+  }
+}
+dhotel_rec<-dhotel[-split,]
+for(i in 1:length(rec_ind))
+{
+  print(dhotel_rec[i,'name'])
+}
+
+```
+
+## Inference: The hotel displayed is the hotel which satisfies the threshold rating score obtained from the user profile and predicted test set ratings
+
+
+* * *
+
+## Is there any work previously reported on the problem and the data? If so, discuss it here.
+
+# Sentiment Analysis using product review data
+# "https://journalofbigdata.springeropen.com/articles/10.1186/s40537-015-0015-2#:~:text=Sentiment%20analysis%20or%20opinion%20mining%20is%20a%20field%20of%20study,sentiment%20analysis%2C%20sentiment%20polarity%20categorization."
+# It uses a POS tagger to filter out non-sentiment words like nouns and pronouns and assign sentiment words like adjectives and adverbs as feature vector components to sentences, which are then averaged over the sentence to obtain the sentiment polarity of the entire sentence
+
+
+* * *
+
+
+
+
