@@ -35,5 +35,5 @@ A markdown version of the project can be observed in `code.html`. It includes th
 * From user coordinates, calculate [haversine distance](https://en.wikipedia.org/wiki/Haversine_formula) to reach similar hotels as the target hotel
 #### 3. To generate hotel recommendations from user profile and hotel reviews
 * Using a regressive [neural network](https://en.wikipedia.org/wiki/Neural_network), model hotel ratings dependent on tfidf feature and get [residual sum of squares](https://en.wikipedia.org/wiki/Residual_sum_of_squares) when estimating on test data
-* Normalize the test dataset predictions. Get the threshold user rating by dividing user profile vector (1 to 5 scores) by test dataset predictions. Set a minimum error.
+* Normalize the test dataset predictions. Get the threshold user rating by multiplying user profile vector (1 to 5 scores) and test dataset predictions. Set a minimum error.
 * For every instance in the test dataset, calculate difference between that prediction and threshold user rating. If it is less than the minimum error, add it to the recommended hotels list.
